@@ -175,3 +175,6 @@ paper_prompts
 
 # 自动爬取的文档
 # script/auto_harmony_document/
+
+# ChromaDB RAG 数据库（动态生成，不需要提交）
+db/rag/

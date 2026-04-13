@@ -16,6 +16,7 @@ from core.pilot.code_monkey import CodeMonkeyAgent
 from core.pilot.developer import DeveloperAgent
 from core.pilot.schema import BreakdownAndroidLayout, BreakdownLayoutTranslation
 from core.translator import init_harmony_from_android
+from core.learning.learning_writer import get_learning_writer
 
 config = ConfigLoader.from_file("config.yaml")
 component_name_pattern = re.compile(r"<\s*([\w\.]+)")
@@ -52,6 +53,16 @@ def convert_android_component_to_harmony(android_xml):
     )
     translations, agent_state = code_monkey_agent.translate_component_v1(breakdown_android_layout)
     harmonyos_code = translations[0].target_component_code
+
+    # ===== 增量学习写入 =====
+    writer = get_learning_writer()
+    before_count, after_count = writer.write_if_needed(android_xml, harmonyos_code)
+
+    if after_count > before_count:
+        status_line = f"\n\n知识库由 {before_count} 变成 {after_count}"
+        harmonyos_code = harmonyos_code + status_line
+    # ==============================
+
     return harmonyos_code
 
 

@@ -116,6 +116,16 @@ class CodeMonkeyAgent(LLMAgent):
             }
         )
         self.retrieve_agent = RetrieveAgent(db_client=self.component_db_client, llm_client=llm_client)
+        # 用户翻译示例库 (harmony_examples collection)
+        self.examples_db_client = Chroma(
+            collection_name="harmony_examples",
+            persist_directory=ConfigLoader.get_config().rag_config.persist_directory,
+            embedding_function=HuggingFaceEmbeddings(
+                model_name=ConfigLoader.get_config().rag_config.embedding.text.model,
+                model_kwargs={"device": "cuda" if torch.cuda.is_available() else "cpu"},
+                encode_kwargs={"normalize_embeddings": True},
+            ),
+        )
         # Agent 执行的所有任务，task_id: 任务细节
         self.agent_state = State()
         self.tasks: List[AgentTask] = []
@@ -368,6 +378,23 @@ class CodeMonkeyAgent(LLMAgent):
             }
         )
         agent_task.subtasks.append(generate_component_document_agent_task)
+
+        # 3.3.5 查询用户翻译示例库 (harmony_examples)
+        user_examples_results = self._query_user_examples(
+            query_text=android_component["function_description"],
+            k=3,
+            score_threshold=0.5
+        )
+        query_user_examples_agent_task = AgentTask(
+            description="查询用户翻译示例",
+            details={
+                "query": android_component["function_description"],
+                "user_examples_count": len(user_examples_results),
+                "user_examples": [(doc, meta, score) for doc, meta, score in user_examples_results]
+            }
+        )
+        agent_task.subtasks.append(query_user_examples_agent_task)
+
         # 3.4 生成类型文档
         type_documents = []
         for type_name, type_schema in related_types.items():
@@ -381,15 +408,69 @@ class CodeMonkeyAgent(LLMAgent):
             }
         )
         agent_task.subtasks.append(generate_type_document_agent_task)
+
         # 3.5 组合成最终组件文档
         final_component_document = "\n".join(type_documents + component_documents)
+
+        # 3.6 添加用户翻译示例到文档
+        user_examples_document = ""
+        if user_examples_results:
+            user_examples_document = "\n\n# 用户翻译示例 (来自知识库)\n"
+            for doc, meta, score in user_examples_results:
+                component_type = meta.get("component_type", "Unknown")
+                created_at = meta.get("created_at", "Unknown")
+                user_examples_document += f"\n## 翻译示例 (相似度: {score:.2f}, 类型: {component_type})\n"
+                user_examples_document += doc + "\n"
+
         return {
-            "document": final_component_document,
+            "document": final_component_document + user_examples_document,
             "component_document": get_harmony_component(component_query.components),
             "queries": total_query_results,
             "components": component_query.components,
-            "idea": component_query.idea
+            "idea": component_query.idea,
+            "user_examples": user_examples_results
         }
+
+    def _query_user_examples(self, query_text: str, k: int = 3, score_threshold: float = 0.5) -> List[tuple]:
+        """查询用户翻译示例库 harmony_examples
+
+        Args:
+            query_text: 查询文本（安卓组件描述）
+            k: 返回数量
+            score_threshold: 相似度阈值
+
+        Returns:
+            List of (document, metadata, score) tuples
+        """
+        try:
+            # 检查 collection 是否有数据
+            if self.examples_db_client._collection.count() == 0:
+                return []
+
+            # 使用 component_db_client 的 embedding function 来生成查询向量
+            query_embedding = self.component_db_client._embedding_function.embed_documents([query_text])
+
+            query_results = self.examples_db_client._collection.query(
+                query_embeddings=query_embedding,
+                n_results=k,
+            )
+
+            results = []
+            if query_results["documents"] and query_results["documents"][0]:
+                for doc, meta, distance in zip(
+                    query_results["documents"][0],
+                    query_results["metadatas"][0] if query_results["metadatas"] else [{}],
+                    query_results["distances"][0]
+                ):
+                    # 转换 distance 为相似度分数 (余弦距离)
+                    score = 1 - distance
+                    if score >= score_threshold:
+                        results.append((doc, meta, score))
+
+            return results
+        except Exception as e:
+            logger.warning(f"查询用户示例库失败: {e}")
+            return []
 
     async def _query_translations_from_db(self, component: Dict[str, Any]) -> List[TranslationTable]:
         """查询数据库获得安卓组件对应的鸿蒙组件的转译表
