@@ -17,20 +17,18 @@ class LearningWriter:
             path=persist_directory,
             settings=Settings(allow_reset=False)
         )
-        # 删除旧的 collection（如果存在）
-        try:
-            self.chroma_client.delete_collection("harmony_examples")
-        except:
-            pass
 
-        # 创建 collection（不设置 embedding function，手动管理 embeddings）
-        self.collection = self.chroma_client.create_collection(
-            name="harmony_examples",
-            metadata={
-                "description": "用户翻译示例库",
-                "hnsw:space": "cosine"  # 使用余弦相似度
-            }
-        )
+        # 获取已存在的 collection 或创建新的（避免每次删除数据）
+        try:
+            self.collection = self.chroma_client.get_collection("harmony_examples")
+        except:
+            self.collection = self.chroma_client.create_collection(
+                name="harmony_examples",
+                metadata={
+                    "description": "用户翻译示例库",
+                    "hnsw:space": "cosine"  # 使用余弦相似度
+                }
+            )
 
         # 初始化 embedding function
         self._embedding_fn = HuggingFaceEmbeddings(
